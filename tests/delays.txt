@@ -4,3 +4,9 @@ server3,server1,0.000124
 client1,server2,0.000163
 client1,server3,0.000235
 client1,server1,0.000152
+server2,server1,0.000113
+server3,server2,0.000118
+server3,server1,0.000178
+client1,server1,0.000138
+client1,server2,0.000190
+client1,server3,0.000122
