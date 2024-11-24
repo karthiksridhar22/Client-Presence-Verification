@@ -1,3 +1,4 @@
+#code borrowed from: https://github.com/gryphius/port-forward/tree/master
 #!/usr/bin/python
 
 # Utility to forward ports on your router using UPnP

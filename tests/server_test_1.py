@@ -1,8 +1,8 @@
-from src.network_architecture import Node
+from src.server_architecture import Server
 import time
 
 if __name__ == "__main__":
-  server1 = Node('127.0.0.1', 8001, peers={
+  server1 = Server('127.0.0.1', 8001, peers={
       'server2': ('127.0.0.1', 8002),
       'server3': ('127.0.0.1', 8003)
   }, identifier='server1')
