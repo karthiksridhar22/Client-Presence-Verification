@@ -1,19 +1,16 @@
+from src.network_architecture import Node
 import time
-import os
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-from network_architecture import Node
 
-node_c = Node('127.0.0.1', 5012)
-node_c.start()
-
-# Give other servers time to start
-time.sleep(2)
-
-# Connect to Server A and B
-node_c.connect('127.0.0.1', 5010)
-node_c.connect('127.0.0.1', 5011)
-
-# Example data to send
-time.sleep(2)
-node_c.send_data("Hello from Server C!")
+if __name__ == "__main__":
+  server3 = Node('127.0.0.1', 8003, peers={
+      'server1': ('127.0.0.1', 8001),
+      'server2': ('127.0.0.1', 8002)
+  }, identifier='server3')
+  server3.start()
+  #keep the main program running to allow command input
+  try:
+      while True:
+          time.sleep(1)  # Prevent busy waiting
+  except KeyboardInterrupt:
+      print("Shutting down server...")
+      server3.shutdown()
