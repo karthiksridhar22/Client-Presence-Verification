@@ -1,0 +1,12 @@
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server3", "to": "client1", "value": 0.000152, "timestamp": 1732498721.8232489}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server2", "to": "client1", "value": 0.000222, "timestamp": 1732498721.823286}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "client1", "to": "server3", "value": 9.7e-05, "timestamp": 1732498721.824286}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "client1", "to": "server2", "value": 0.000234, "timestamp": 1732498721.824397}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server3", "to": "server1", "value": 0.000342, "timestamp": 1732498721.8245618}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server2", "to": "server1", "value": 0.0003, "timestamp": 1732498721.8246799}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server1", "to": "server3", "value": 0.00039, "timestamp": 1732498721.824759}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server2", "to": "server3", "value": 0.000403, "timestamp": 1732498721.824875}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server3", "to": "server2", "value": 0.000192, "timestamp": 1732498721.824905}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server1", "to": "server2", "value": 0.000624, "timestamp": 1732498721.825071}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server2", "to": "server3", "value": 0.00023, "timestamp": 1732498721.8250828}
+{"session_id": "131531ee-6c49-4d31-8034-16d21ef0af45", "type": "owd", "from": "server3", "to": "server2", "value": 0.000254, "timestamp": 1732498721.825217}
