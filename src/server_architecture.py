@@ -1,12 +1,13 @@
 import socket
 import threading
 import time
+import json
 
 
 class Server:
     def __init__(self, host, port, peers=None, identifier=None):
         """
-        Initializes a Server object to act as a node in a P2P network and handle client connections.
+        Initializes a Server object to act as a verifier in the CPV protocol.
 
         :param host: The IP address of the server.
         :param port: The port on which the server listens.
@@ -15,7 +16,7 @@ class Server:
         """
         self.host = host
         self.port = port
-        self.identifier = identifier  # Unique identifier for this server
+        self.identifier = identifier  # Unique identifier for this server (e.g., 'server1')
         self.peers = peers or {}  # Mapping of peer identifiers to (host, port)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connections = {}  # Map identifiers to connections with peers
@@ -51,9 +52,6 @@ class Server:
     def _handle_incoming_connection(self, connection, address):
         """
         Handles an incoming connection from a peer or client.
-
-        :param connection: The socket object for the connection.
-        :param address: The address of the incoming connection.
         """
         try:
             data = connection.recv(1024).decode()
@@ -68,7 +66,10 @@ class Server:
                     ).start()
                 else:
                     with self.lock:
-                        self.connections[identifier] = {"incoming": connection, "outgoing": None}
+                        if identifier not in self.connections:
+                            self.connections[identifier] = {"incoming": connection, "outgoing": None}
+                        else:
+                            self.connections[identifier]["incoming"] = connection
                     print(f"[{self.identifier}] Incoming connection from {identifier} ({address})")
                     threading.Thread(
                         target=self._handle_peer, args=(connection, identifier), daemon=True
@@ -80,20 +81,28 @@ class Server:
 
     def _handle_client(self, connection, identifier):
         """
-        Handles communication with a client, including responding to delay measurement requests.
-
-        :param connection: The socket object for the client.
-        :param identifier: The unique identifier of the client.
+        Handles communication with a client.
         """
         try:
             while self.running:
                 data = connection.recv(1024).decode()
                 if not data:
                     continue
-                print(f"[{self.identifier}] Received from client {identifier}: {data}")
-                if data == "MEASURE_DELAYS_REQUEST":
-                    t2 = time.time()
-                    connection.sendall(f"MEASURE_DELAYS_RESPONSE {t2}".encode())
+                # Handle OWD measurement response from client
+                if data.startswith("OWD_MEASUREMENT_RESPONSE"):
+                    _, responder_id, response_time_str = data.split()
+                    response_time = float(response_time_str)
+                    receive_time = time.time()
+                    send_time = self.client_measurements.get(identifier, {}).get("send_time")
+                    if send_time:
+                        # Calculate OWDs
+                        owd_self_to_client = response_time - send_time
+                        owd_client_to_self = receive_time - response_time
+                        # Log OWDs
+                        self._log_owd(self.identifier, identifier, owd_self_to_client)
+                        self._log_owd(identifier, self.identifier, owd_client_to_self)
+                else:
+                    print(f"[{self.identifier}] Received from client {identifier}: {data}")
         except socket.error as e:
             print(f"[{self.identifier}] Connection error with client {identifier}: {e}")
         finally:
@@ -101,6 +110,44 @@ class Server:
                 connection.close()
                 self.client_connections.pop(identifier, None)
                 print(f"[{self.identifier}] Disconnected from client {identifier}")
+
+    def _handle_peer(self, connection, identifier):
+        """
+        Handles communication with a peer.
+        """
+        try:
+            while self.running:
+                data = connection.recv(1024).decode()
+                if not data:
+                    continue
+                # Handle OWD measurement requests and responses
+                if data.startswith("OWD_MEASUREMENT_REQUEST"):
+                    _, requester_id, send_time_str = data.split()
+                    # Respond immediately
+                    response_time = time.time()
+                    message = f"OWD_MEASUREMENT_RESPONSE {self.identifier} {response_time}"
+                    connection.sendall(message.encode())
+                elif data.startswith("OWD_MEASUREMENT_RESPONSE"):
+                    _, responder_id, response_time_str = data.split()
+                    response_time = float(response_time_str)
+                    receive_time = time.time()
+                    send_time = self.verifier_measurements.get(identifier, {}).get("send_time")
+                    if send_time:
+                        # Calculate OWDs
+                        owd_self_to_verifier = response_time - send_time
+                        owd_verifier_to_self = receive_time - response_time
+                        # Log OWDs
+                        self._log_owd(self.identifier, identifier, owd_self_to_verifier)
+                        self._log_owd(identifier, self.identifier, owd_verifier_to_self)
+                else:
+                    print(f"[{self.identifier}] Received from {identifier}: {data}")
+        except socket.error as e:
+            print(f"[{self.identifier}] Connection error with {identifier}: {e}")
+        finally:
+            with self.lock:
+                connection.close()
+                self.connections.pop(identifier, None)
+                print(f"[{self.identifier}] Disconnected from peer {identifier}")
 
     def connect_to_peers(self):
         """
@@ -112,10 +159,6 @@ class Server:
     def connect(self, identifier, peer_host, peer_port):
         """
         Establishes an outgoing connection to a peer.
-
-        :param identifier: The unique identifier of the peer.
-        :param peer_host: The host of the peer.
-        :param peer_port: The port of the peer.
         """
         if identifier in self.connections and self.connections[identifier].get("outgoing"):
             print(f"[{self.identifier}] Already connected to {identifier} (outgoing). Skipping.")
@@ -138,71 +181,129 @@ class Server:
         except socket.error as e:
             print(f"[{self.identifier}] Failed to connect to {identifier}: {e}")
 
-    def _handle_peer(self, connection, identifier):
-        """
-        Handles communication with a peer, including delay measurements.
-
-        :param connection: The socket object for the peer.
-        :param identifier: The unique identifier of the peer.
-        """
-        try:
-            while self.running:
-                data = connection.recv(1024).decode()
-                if not data:
-                    continue
-
-                print(f"[{self.identifier}] Received from {identifier}: {data}")
-                if data == "MEASURE_DELAYS_REQUEST":
-                    t2 = time.time()
-                    connection.sendall(f"MEASURE_DELAYS_RESPONSE {t2}".encode())
-                elif data.startswith("MEASURE_DELAYS_RESPONSE"):
-                    _, t2 = data.split(" ")
-                    t3 = time.time()
-                    delay = (t3 - float(t2)) / 2
-                    self._log_delay(self.identifier, identifier, delay)
-        except socket.error as e:
-            print(f"[{self.identifier}] Connection error with {identifier}: {e}")
-        finally:
-            with self.lock:
-                connection.close()
-                if identifier in self.connections:
-                    self.connections.pop(identifier, None)
-                print(f"[{self.identifier}] Disconnected from peer {identifier}")
-
     def measure_delays(self):
         """
-        Initiates a delay measurement protocol with all connected peers and clients.
+        Measures all necessary delays and logs them.
+        """
+        self.verifier_measurements = {}
+        self.client_measurements = {}
 
-        Sends a 'MEASURE_DELAYS_REQUEST' to all connected peers and clients.
+        # Measure bidirectional delays with other verifiers
+        for verifier_id, sockets in self.connections.items():
+            if sockets.get("outgoing"):
+                verifier_conn = sockets["outgoing"]
+                self._measure_bidirectional_delays_with_verifier(verifier_id, verifier_conn)
+
+        # Measure bidirectional delays with the client
+        for client_id, client_conn in self.client_connections.items():
+            self._measure_bidirectional_delays_with_client(client_id, client_conn)
+
+        # Allow time for measurements
+        time.sleep(1)
+
+        # After measuring OWDs, calculate and log dic + dcj for all i, j
+        self._calculate_and_log_dic_dcj_sums()
+
+    def _measure_bidirectional_delays_with_verifier(self, verifier_id, verifier_conn):
+        """
+        Measures bidirectional OWDs between this verifier and another verifier.
+        """
+        try:
+            # Send a timestamped message to verifier
+            send_time = time.time()
+            message = f"OWD_MEASUREMENT_REQUEST {self.identifier} {send_time}"
+            verifier_conn.sendall(message.encode())
+            # Store send_time for later calculation
+            self.verifier_measurements[verifier_id] = {"send_time": send_time}
+        except socket.error as e:
+            print(f"[{self.identifier}] Error measuring OWD with {verifier_id}: {e}")
+
+    def _measure_bidirectional_delays_with_client(self, client_id, client_conn):
+        """
+        Measures bidirectional OWDs between this verifier and the client.
+        """
+        try:
+            # Send a timestamped message to the client
+            send_time = time.time()
+            message = f"OWD_MEASUREMENT_REQUEST {self.identifier} {send_time}"
+            client_conn.sendall(message.encode())
+            # Store send_time for later calculation
+            self.client_measurements[client_id] = {"send_time": send_time}
+        except socket.error as e:
+            print(f"[{self.identifier}] Error measuring OWD with client {client_id}: {e}")
+
+    def _log_owd(self, from_id, to_id, owd_value):
+        """
+        Logs the OWD between two entities (verifiers or client).
         """
         with self.lock:
-            # Measure delays with peers
-            for identifier, sockets in self.connections.items():
-                outgoing_socket = sockets.get("outgoing")
-                if outgoing_socket:
-                    try:
-                        outgoing_socket.sendall("MEASURE_DELAYS_REQUEST".encode())
-                    except socket.error as e:
-                        print(f"[{self.identifier}] Failed to initiate delay measurement with {identifier}: {e}")
-            
-            # Measure delays with clients
-            for client_id, connection in self.client_connections.items():
-                try:
-                    connection.sendall("MEASURE_DELAYS_REQUEST".encode())
-                except socket.error as e:
-                    print(f"[{self.identifier}] Failed to initiate delay measurement with client {client_id}: {e}")
+            data = {
+                "type": "owd",
+                "from": from_id,
+                "to": to_id,
+                "value": round(owd_value, 6)
+            }
+            with open(self.delays_file, "a") as file:
+                json.dump(data, file)
+                file.write("\n")
 
-    def _log_delay(self, from_id, to_id, delay):
+    def _calculate_and_log_dic_dcj_sums(self):
         """
-        Logs the measured delay to the delays file.
-
-        :param from_id: Identifier of the sender.
-        :param to_id: Identifier of the receiver.
-        :param delay: The measured delay in seconds.
+        Calculates and logs dic + dcj for all i != j from 1 to 3, avoiding duplicates.
         """
-        print(f"[{self.identifier}] Measured delay between {from_id} and {to_id}: {delay:.6f} seconds")
-        with open(self.delays_file, "a") as file:
-            file.write(f"{from_id},{to_id},{delay:.6f}\n")
+        # Read the OWDs from the delays file
+        owd_data = []
+        existing_dic_dcj_pairs = set()
+        with self.lock:
+            try:
+                with open(self.delays_file, "r") as file:
+                    for line in file:
+                        data = json.loads(line.strip())
+                        if data["type"] == "owd":
+                            owd_data.append(data)
+                        elif data["type"] == "dic+dcj":
+                            vi = data["vi"]
+                            vj = data["vj"]
+                            existing_dic_dcj_pairs.add((vi, vj))
+            except FileNotFoundError:
+                print(f"[{self.identifier}] Delays file not found.")
+                return
+        # Build dictionaries of OWDs
+        owd_dict = {}
+        for entry in owd_data:
+            from_id = entry["from"]
+            to_id = entry["to"]
+            value = entry["value"]
+            owd_dict[(from_id, to_id)] = value
+        # Calculate dic + dcj for all i != j
+        server_ids = ["server1", "server2", "server3"]
+        client_id = "client1"
+        for vi in server_ids:
+            dic = owd_dict.get((vi, client_id), None)
+            if dic is None:
+                continue
+            for vj in server_ids:
+                if vi == vj:
+                    continue  # Skip cases where vi == vj
+                dcj = owd_dict.get((client_id, vj), None)
+                if dcj is None:
+                    continue
+                pair = (vi, vj)
+                if pair in existing_dic_dcj_pairs:
+                    continue  # Skip if already logged
+                sum_dic_dcj = dic + dcj
+                # Log the sum
+                with self.lock:
+                    data = {
+                        "type": "dic+dcj",
+                        "vi": vi,
+                        "vj": vj,
+                        "value": round(sum_dic_dcj, 6)
+                    }
+                    with open(self.delays_file, "a") as file:
+                        json.dump(data, file)
+                        file.write("\n")
+                existing_dic_dcj_pairs.add(pair)  # Add to the set to prevent duplicates within this execution
 
     def list_connections(self):
         """
@@ -232,18 +333,15 @@ class Server:
                 connection.close()
                 self.client_connections.pop(client_id, None)
             self.socket.close()
-    
+
     def command_loop(self):
         """
         Provides a command-line interface for the user to interact with the server.
         """
         while self.running:
-            command = input("Enter command (list/send/connect/measure_delays/close): ").strip().lower()
+            command = input("Enter command (list/connect/measure_delays/close): ").strip().lower()
             if command == "list":
                 self.list_connections()
-            elif command.startswith("send "):
-                _, message = command.split(" ", 1)
-                self.send_data(message)
             elif command == "connect":
                 self.connect_to_peers()
             elif command == "measure_delays":
@@ -252,4 +350,4 @@ class Server:
                 self.shutdown()
                 break
             else:
-                print("Available commands: list, send <message>, connect, measure_delays, close")
+                print("Available commands: list, connect, measure_delays, close")

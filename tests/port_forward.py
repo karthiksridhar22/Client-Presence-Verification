@@ -1,3 +1,5 @@
+'''This is code to check whether UPnP is available in your network. Follow the document in the Github to test.'''
+
 #code borrowed from: https://github.com/gryphius/port-forward/tree/master
 #!/usr/bin/python
 

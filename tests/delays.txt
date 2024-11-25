@@ -1,12 +1,24 @@
-server2,server1,0.000136
-server3,server2,0.000138
-server3,server1,0.000124
-client1,server2,0.000163
-client1,server3,0.000235
-client1,server1,0.000152
-server2,server1,0.000113
-server3,server2,0.000118
-server3,server1,0.000178
-client1,server1,0.000138
-client1,server2,0.000190
-client1,server3,0.000122
+{"type": "owd", "from": "server1", "to": "client1", "value": 0.00035}
+{"type": "owd", "from": "server1", "to": "server3", "value": 0.000374}
+{"type": "owd", "from": "server3", "to": "server1", "value": 0.000479}
+{"type": "owd", "from": "client1", "to": "server1", "value": 0.000265}
+{"type": "owd", "from": "server1", "to": "server2", "value": 0.000586}
+{"type": "owd", "from": "server2", "to": "server1", "value": 0.000446}
+{"type": "owd", "from": "server2", "to": "server1", "value": 0.000741}
+{"type": "owd", "from": "server2", "to": "client1", "value": 0.000489}
+{"type": "owd", "from": "client1", "to": "server2", "value": 0.000465}
+{"type": "owd", "from": "server1", "to": "server2", "value": 0.00033}
+{"type": "owd", "from": "server2", "to": "server3", "value": 0.000603}
+{"type": "owd", "from": "server3", "to": "server2", "value": 0.000441}
+{"type": "dic+dcj", "vi": "server1", "vj": "server2", "value": 0.000815}
+{"type": "dic+dcj", "vi": "server2", "vj": "server1", "value": 0.000754}
+{"type": "owd", "from": "server3", "to": "server1", "value": 0.000723}
+{"type": "owd", "from": "server3", "to": "client1", "value": 0.000416}
+{"type": "owd", "from": "client1", "to": "server3", "value": 0.00036}
+{"type": "owd", "from": "server1", "to": "server3", "value": 0.000302}
+{"type": "owd", "from": "server3", "to": "server2", "value": 0.000482}
+{"type": "owd", "from": "server2", "to": "server3", "value": 0.000359}
+{"type": "dic+dcj", "vi": "server1", "vj": "server3", "value": 0.00071}
+{"type": "dic+dcj", "vi": "server2", "vj": "server3", "value": 0.000849}
+{"type": "dic+dcj", "vi": "server3", "vj": "server1", "value": 0.000681}
+{"type": "dic+dcj", "vi": "server3", "vj": "server2", "value": 0.000881}
