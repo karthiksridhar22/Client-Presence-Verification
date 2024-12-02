@@ -1,0 +1,5 @@
+setup.py
+src/cpv.egg-info/PKG-INFO
+src/cpv.egg-info/SOURCES.txt
+src/cpv.egg-info/dependency_links.txt
+src/cpv.egg-info/top_level.txt
