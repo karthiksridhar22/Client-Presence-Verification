@@ -3,16 +3,19 @@
 import json
 import time
 import threading
+import logging
 
 # Constants for message types
 HELLO = "HELLO"
 TIMESTAMP = "TIMESTAMP"
 FORWARD_TIMESTAMP = "FORWARD_TIMESTAMP"
-OWD_MEASUREMENT_REQUEST = "OWD_MEASUREMENT_REQUEST"
-OWD_MEASUREMENT_RESPONSE = "OWD_MEASUREMENT_RESPONSE"
 RTT_MEASUREMENT_REQUEST = "RTT_MEASUREMENT_REQUEST"
 RTT_MEASUREMENT_RESPONSE = "RTT_MEASUREMENT_RESPONSE"
 START_MEASUREMENTS = "START_MEASUREMENTS"
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def parse_message(data):
     """
@@ -46,7 +49,7 @@ def construct_message(message_type, *args):
 
 def log_delays(filename, session_id, iteration, data, lock=None):
     """
-    Logs the delay data to the specified file.
+    Logs the delay data to the specified JSON file.
 
     Args:
         filename (str): The name of the file to log to.
@@ -54,7 +57,6 @@ def log_delays(filename, session_id, iteration, data, lock=None):
         iteration (int): The iteration number.
         data (dict): The data to log.
         lock (threading.Lock, optional): A lock to ensure thread safety.
-
     """
     entry = {
         "session_id": session_id,

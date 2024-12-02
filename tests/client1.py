@@ -1,7 +1,7 @@
-from src.client_architecture import Client
+from cpv.client_architecture import Client
 import time
 
-client = Client(identifier='client1', servers={'server1': ('127.0.0.1', 9201), 'server2': ('127.0.0.1', 9202), 'server3': ('127.0.0.1', 9203)})
+client = Client(identifier='client1', servers={'server1': ('127.0.0.1', 9301), 'server2': ('127.0.0.1', 9302), 'server3': ('127.0.0.1', 9303)})
 client.start()
   #keep the main program running to allow command input
 try:

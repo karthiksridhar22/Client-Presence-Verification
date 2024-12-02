@@ -1,4 +1,11 @@
 setup.py
+src/cpv/__init__.py
+src/cpv/client_architecture.py
+src/cpv/cpv.py
+src/cpv/cpv_utils.py
+src/cpv/network_architecture_twisted.py
+src/cpv/ntp.py
+src/cpv/server_architecture.py
 src/cpv.egg-info/PKG-INFO
 src/cpv.egg-info/SOURCES.txt
 src/cpv.egg-info/dependency_links.txt

@@ -4,8 +4,11 @@ import socket
 import threading
 import time
 import uuid
-import src.cpv_utils as cpv_utils
+from . import cpv_utils
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Server:
     def __init__(self, host, port, peers=None, identifier=None):
@@ -31,9 +34,11 @@ class Server:
 
         # Data structures for protocols
         self.dic_dcj_sums = {}  # Stores dic + dcj sums for mp protocol
+        self.min_sums = {}  # Stores min(dic + dcj, djc + dci) for mp protocol
         self.av_delays = {}     # Stores delays from av protocol
-        self.delays_mp_file = "delays_mp.txt"  # File to log mp delays
-        self.delays_av_file = "delays_av.txt"  # File to log av delays
+
+        self.delays_mp_file = "delays_mp.json"  # File to log mp delays
+        self.delays_av_file = "delays_av.json"  # File to log av delays
 
         # Clear delay files on startup
         open(self.delays_mp_file, 'w').close()
@@ -41,7 +46,7 @@ class Server:
 
         # Measurements storage
         self.verifier_measurements = {}  # For av protocol
-        self.timestamps = {}  # For mp protocol
+        self.forwarded_timestamps = set()  # To prevent redundant forwarding
 
     def start(self):
         """
@@ -56,7 +61,7 @@ class Server:
         """
         self.socket.bind((self.host, self.port))
         self.socket.listen(5)
-        print(f"[{self.identifier}] Listening on {self.host}:{self.port}")
+        logger.info(f"[{self.identifier}] Listening on {self.host}:{self.port}")
         while self.running:
             try:
                 connection, address = self.socket.accept()
@@ -65,15 +70,11 @@ class Server:
                 ).start()
             except socket.error as e:
                 if self.running:
-                    print(f"[{self.identifier}] Error accepting connection: {e}")
+                    logger.error(f"[{self.identifier}] Error accepting connection: {e}")
 
     def _handle_incoming_connection(self, connection, address):
         """
         Handles an incoming connection from a peer or client.
-
-        Args:
-            connection (socket.socket): The socket connection.
-            address (tuple): The address of the incoming connection.
         """
         try:
             data = connection.recv(1024).decode()
@@ -82,7 +83,7 @@ class Server:
                 if identifier.startswith("client"):
                     with self.lock:
                         self.client_connections[identifier] = connection
-                    print(f"[{self.identifier}] Incoming connection from client {identifier} ({address})")
+                    logger.info(f"[{self.identifier}] Incoming connection from client {identifier} ({address})")
                     threading.Thread(
                         target=self._handle_client, args=(connection, identifier), daemon=True
                     ).start()
@@ -92,22 +93,18 @@ class Server:
                             self.connections[identifier] = {"incoming": connection, "outgoing": None}
                         else:
                             self.connections[identifier]["incoming"] = connection
-                    print(f"[{self.identifier}] Incoming connection from {identifier} ({address})")
+                    logger.info(f"[{self.identifier}] Incoming connection from {identifier} ({address})")
                     threading.Thread(
                         target=self._handle_peer, args=(connection, identifier), daemon=True
                     ).start()
             else:
-                print(f"[{self.identifier}] Unexpected data from {address}: {data}")
+                logger.warning(f"[{self.identifier}] Unexpected data from {address}: {data}")
         except socket.error as e:
-            print(f"[{self.identifier}] Error handling incoming connection from {address}: {e}")
+            logger.error(f"[{self.identifier}] Error handling incoming connection from {address}: {e}")
 
     def _handle_client(self, connection, identifier):
         """
         Handles communication with a client.
-
-        Args:
-            connection (socket.socket): The socket connection to the client.
-            identifier (str): The identifier of the client.
         """
         try:
             while self.running:
@@ -118,7 +115,7 @@ class Server:
                 if message_type == cpv_utils.FORWARD_TIMESTAMP:
                     # Handle forwarded timestamp from client
                     sender_id = params[0]
-                    timestamp = params[1]
+                    timestamp = float(params[1])
                     iteration = int(params[2])
                     self._handle_timestamp_from_client(sender_id, timestamp, iteration)
                 elif message_type == cpv_utils.START_MEASUREMENTS:
@@ -127,22 +124,18 @@ class Server:
                     self.session_id = session_id
                     self.measure_delays(iterations)
                 else:
-                    print(f"[{self.identifier}] Received from client {identifier}: {data}")
+                    logger.info(f"[{self.identifier}] Received from client {identifier}: {data}")
         except socket.error as e:
-            print(f"[{self.identifier}] Connection error with client {identifier}: {e}")
+            logger.error(f"[{self.identifier}] Connection error with client {identifier}: {e}")
         finally:
             with self.lock:
                 connection.close()
                 self.client_connections.pop(identifier, None)
-                print(f"[{self.identifier}] Disconnected from client {identifier}")
+                logger.info(f"[{self.identifier}] Disconnected from client {identifier}")
 
     def _handle_peer(self, connection, identifier):
         """
         Handles communication with a peer.
-
-        Args:
-            connection (socket.socket): The socket connection to the peer.
-            identifier (str): The identifier of the peer.
         """
         try:
             while self.running:
@@ -166,6 +159,18 @@ class Server:
                     response_time = float(params[1])
                     iteration = int(params[2])
                     self._handle_rtt_response(responder_id, response_time, iteration)
+                elif message_type == cpv_utils.FORWARD_TIMESTAMP:
+                    # Handle forwarded timestamp
+                    sender_id = params[0]
+                    timestamp = float(params[1])
+                    iteration = int(params[2])
+                    self._handle_timestamp_from_client(sender_id, timestamp, iteration)
+                elif message_type == cpv_utils.TIMESTAMP:
+                    # Handle direct timestamp from peer (if applicable)
+                    sender_id = params[0]
+                    timestamp = float(params[1])
+                    iteration = int(params[2])
+                    self._handle_timestamp_from_peer(sender_id, timestamp, iteration)
                 elif message_type == cpv_utils.START_MEASUREMENTS:
                     # Start measurements
                     session_id = params[0]
@@ -173,14 +178,14 @@ class Server:
                     self.session_id = session_id
                     self.measure_delays(iterations)
                 else:
-                    print(f"[{self.identifier}] Received from {identifier}: {data}")
+                    logger.info(f"[{self.identifier}] Received from {identifier}: {data}")
         except socket.error as e:
-            print(f"[{self.identifier}] Connection error with {identifier}: {e}")
+            logger.error(f"[{self.identifier}] Connection error with {identifier}: {e}")
         finally:
             with self.lock:
                 connection.close()
                 self.connections.pop(identifier, None)
-                print(f"[{self.identifier}] Disconnected from peer {identifier}")
+                logger.info(f"[{self.identifier}] Disconnected from peer {identifier}")
 
     def connect_to_peers(self):
         """
@@ -192,14 +197,9 @@ class Server:
     def connect(self, identifier, peer_host, peer_port):
         """
         Establishes an outgoing connection to a peer.
-
-        Args:
-            identifier (str): The identifier of the peer.
-            peer_host (str): The hostname or IP address of the peer.
-            peer_port (int): The port number of the peer.
         """
         if identifier in self.connections and self.connections[identifier].get("outgoing"):
-            print(f"[{self.identifier}] Already connected to {identifier} (outgoing). Skipping.")
+            logger.info(f"[{self.identifier}] Already connected to {identifier} (outgoing). Skipping.")
             return
 
         try:
@@ -213,107 +213,92 @@ class Server:
                 else:
                     self.connections[identifier]["outgoing"] = outgoing_socket
 
-            print(f"[{self.identifier}] Outgoing connection to {identifier} ({peer_host}:{peer_port})")
+            logger.info(f"[{self.identifier}] Outgoing connection to {identifier} ({peer_host}:{peer_port})")
             threading.Thread(
                 target=self._handle_peer, args=(outgoing_socket, identifier), daemon=True
             ).start()
         except socket.error as e:
-            print(f"[{self.identifier}] Failed to connect to {identifier}: {e}")
+            logger.error(f"[{self.identifier}] Failed to connect to {identifier}: {e}")
 
     def measure_delays(self, iterations):
         """
         Measures delays using mp and av protocols over a given number of iterations.
-
-        Args:
-            iterations (int): The number of iterations to perform.
         """
         for iteration in range(1, iterations + 1):
-            print(f"[{self.identifier}] Starting iteration {iteration}/{iterations}")
+            logger.info(f"[{self.identifier}] Starting iteration {iteration}/{iterations}")
             # Run mp protocol
             self.mp_protocol(iteration)
             # Run av protocol
             self.av_protocol(iteration)
-            print(f"[{self.identifier}] Iteration {iteration}/{iterations} completed.")
+            logger.info(f"[{self.identifier}] Iteration {iteration}/{iterations} completed.")
+            # Reset data structures for next iteration
+            self.dic_dcj_sums.clear()
+            self.min_sums.clear()
+            self.verifier_measurements.clear()
+            self.av_delays.clear()
+            self.forwarded_timestamps.clear()
 
     def mp_protocol(self, iteration):
         """
         Implements the mp protocol for delay measurement.
-
-        Args:
-            iteration (int): The current iteration number.
         """
         # Step 1: Send timestamp to client
         self._send_timestamp_to_client(iteration)
-        # Wait for client to forward timestamps
+        # Wait for timestamps to propagate
         time.sleep(1)
-        # Step 2: Compute dic + dcj sums after receiving timestamps from client
-        self._compute_dic_dcj_sums(iteration)
+        # Step 2: Compute min(dic + dcj, djc + dci)
+        self._compute_min_sums(iteration)
         # Store delays
         self._store_mp_delays(iteration)
 
     def _send_timestamp_to_client(self, iteration):
         """
         Sends the current timestamp to the client.
-
-        Args:
-            iteration (int): The current iteration number.
         """
         current_time = time.time()
         message = cpv_utils.construct_message(
             cpv_utils.TIMESTAMP, self.identifier, current_time, iteration
         )
-        # Send to client
         with self.lock:
             for client_id, client_conn in self.client_connections.items():
                 try:
                     client_conn.sendall(message.encode())
-                    print(f"[{self.identifier}] Sent timestamp to client {client_id}")
+                    logger.info(f"[{self.identifier}] Sent timestamp to client {client_id}")
                 except socket.error as e:
-                    print(f"[{self.identifier}] Error sending timestamp to {client_id}: {e}")
+                    logger.error(f"[{self.identifier}] Error sending timestamp to {client_id}: {e}")
 
     def _handle_timestamp_from_client(self, sender_id, timestamp, iteration):
         """
         Handles a timestamp forwarded by the client from another verifier.
-
-        Args:
-            sender_id (str): The identifier of the sender verifier.
-            timestamp (str): The timestamp received.
-            iteration (int): The current iteration number.
         """
         receive_time = time.time()
-        dic_dcj = receive_time - float(timestamp)
+        dic_dcj = receive_time - timestamp
         key = (sender_id, self.identifier, iteration)
-        self.dic_dcj_sums[key] = dic_dcj
-        print(f"[{self.identifier}] Received timestamp from {sender_id}, dic + dcj = {dic_dcj:.6f}")
+        with self.lock:
+            self.dic_dcj_sums[key] = dic_dcj
+        logger.info(f"[{self.identifier}] Received timestamp from {sender_id}, dic + dcj = {dic_dcj:.6f}")
 
-    def _compute_dic_dcj_sums(self, iteration):
+    def _compute_min_sums(self, iteration):
         """
-        Computes dic + dcj sums and finds min(dic + dcj, djc + dci) for the current iteration.
-
-        Args:
-            iteration (int): The current iteration number.
+        Computes min(dic + dcj, djc + dci) for all pairs.
         """
-        # Collect and compute min(dic + dcj, djc + dci)
-        self.min_sums = {}
-        server_ids = ['server1', 'server2', 'server3']
-        for i in server_ids:
-            for j in server_ids:
-                if i != j:
-                    key1 = (i, j, iteration)
-                    key2 = (j, i, iteration)
-                    dic_dcj = self.dic_dcj_sums.get(key1, None)
-                    djc_dci = self.dic_dcj_sums.get(key2, None)
-                    if dic_dcj is not None and djc_dci is not None:
-                        min_sum = min(dic_dcj, djc_dci)
-                        self.min_sums[(i, j)] = min_sum
-                        print(f"[{self.identifier}] min(dic + dcj, djc + dci) for ({i}, {j}): {min_sum:.6f}")
+        with self.lock:
+            server_ids = set([self.identifier] + list(self.peers.keys()))
+            for i in server_ids:
+                for j in server_ids:
+                    if i != j:
+                        key1 = (i, j, iteration)
+                        key2 = (j, i, iteration)
+                        dic_dcj = self.dic_dcj_sums.get(key1)
+                        djc_dci = self.dic_dcj_sums.get(key2)
+                        if dic_dcj is not None and djc_dci is not None:
+                            min_sum = min(dic_dcj, djc_dci)
+                            self.min_sums[(i, j)] = min_sum
+                            logger.info(f"[{self.identifier}] min(dic + dcj, djc + dci) for ({i}, {j}): {min_sum:.6f}")
 
     def _store_mp_delays(self, iteration):
         """
         Stores the min(dic + dcj, djc + dci) values calculated from the mp protocol.
-
-        Args:
-            iteration (int): The current iteration number.
         """
         data = {'min_sums': {f"{k[0]}_{k[1]}": v for k, v in self.min_sums.items()}}
         cpv_utils.log_delays(
@@ -323,9 +308,6 @@ class Server:
     def av_protocol(self, iteration):
         """
         Implements the av protocol for delay measurement.
-
-        Args:
-            iteration (int): The current iteration number.
         """
         # Measure RTTs with other verifiers
         for verifier_id, sockets in self.connections.items():
@@ -333,19 +315,12 @@ class Server:
                 self._measure_rtt_with_verifier(verifier_id, sockets["outgoing"], iteration)
         # Wait for RTT measurements
         time.sleep(1)
-        # Calculate delays
-        self._calculate_av_delays(iteration)
-        # Store delays
+        # Delays are computed upon receiving responses
         self._store_av_delays(iteration)
 
     def _measure_rtt_with_verifier(self, verifier_id, verifier_conn, iteration):
         """
         Measures RTT with another verifier.
-
-        Args:
-            verifier_id (str): The identifier of the verifier.
-            verifier_conn (socket.socket): The socket connection to the verifier.
-            iteration (int): The current iteration number.
         """
         try:
             send_time = time.time()
@@ -355,48 +330,34 @@ class Server:
             verifier_conn.sendall(message.encode())
             # Store send_time
             key = (verifier_id, iteration)
-            self.verifier_measurements[key] = {'send_time': send_time}
+            with self.lock:
+                self.verifier_measurements[key] = {'send_time': send_time}
         except socket.error as e:
-            print(f"[{self.identifier}] Error measuring RTT with {verifier_id}: {e}")
+            logger.error(f"[{self.identifier}] Error measuring RTT with {verifier_id}: {e}")
 
     def _handle_rtt_response(self, responder_id, response_time, iteration):
         """
         Handles RTT measurement response from another verifier.
-
-        Args:
-            responder_id (str): The identifier of the responder verifier.
-            response_time (float): The response time received.
-            iteration (int): The current iteration number.
         """
         receive_time = time.time()
         key = (responder_id, iteration)
-        send_time = self.verifier_measurements.get(key, {}).get('send_time', None)
-        if send_time:
-            rtt = receive_time - send_time
-            delay = rtt / 2
-            self.av_delays[key] = delay
-            print(f"[{self.identifier}] RTT with {responder_id}: {rtt:.6f}, delay: {delay:.6f}")
-        else:
-            print(f"[{self.identifier}] Missing send_time for RTT with {responder_id}")
-
-    def _calculate_av_delays(self, iteration):
-        """
-        Calculates delays from RTT measurements.
-
-        Args:
-            iteration (int): The current iteration number.
-        """
-        # Delays are already calculated in _handle_rtt_response
-        pass
+        with self.lock:
+            send_time = self.verifier_measurements.get(key, {}).get('send_time')
+            if send_time:
+                rtt = receive_time - send_time
+                delay = rtt / 2
+                self.av_delays[key] = delay
+                logger.info(f"[{self.identifier}] RTT with {responder_id}: {rtt:.6f}, delay: {delay:.6f}")
+            else:
+                logger.warning(f"[{self.identifier}] Missing send_time for RTT with {responder_id}")
 
     def _store_av_delays(self, iteration):
         """
         Stores the delays calculated from the av protocol.
-
-        Args:
-            iteration (int): The current iteration number.
         """
-        data = {'delays': {f"{k[0]}": v for k, v in self.av_delays.items() if k[1] == iteration}}
+        with self.lock:
+            delays = {k[0]: v for k, v in self.av_delays.items() if k[1] == iteration}
+        data = {'delays': delays}
         cpv_utils.log_delays(
             self.delays_av_file, self.session_id, iteration, data, self.lock
         )
@@ -406,18 +367,18 @@ class Server:
         Lists all active connections to peers and clients.
         """
         with self.lock:
-            print(f"[{self.identifier}] Connections:")
+            logger.info(f"[{self.identifier}] Connections:")
             for identifier, sockets in self.connections.items():
                 if sockets.get("incoming") or sockets.get("outgoing"):
-                    print(f"  - Peer: {identifier}")
+                    logger.info(f"  - Peer: {identifier}")
             for client_id in self.client_connections.keys():
-                print(f"  - Client: {client_id}")
+                logger.info(f"  - Client: {client_id}")
 
     def shutdown(self):
         """
         Gracefully shuts down the server, closing all connections and notifying peers.
         """
-        print(f"[{self.identifier}] Shutting down...")
+        logger.info(f"[{self.identifier}] Shutting down...")
         self.running = False
         with self.lock:
             for identifier, sockets in list(self.connections.items()):
@@ -448,14 +409,11 @@ class Server:
                 self.shutdown()
                 break
             else:
-                print("Available commands: list, connect, measure_delays, close")
+                logger.info("Available commands: list, connect, measure_delays, close")
 
     def _broadcast_start_measurements(self, iterations):
         """
         Sends a message to all connected entities to start measurements.
-
-        Args:
-            iterations (int): The number of iterations to perform.
         """
         message = cpv_utils.construct_message(
             cpv_utils.START_MEASUREMENTS, self.session_id, iterations
@@ -467,10 +425,10 @@ class Server:
                     try:
                         sockets["outgoing"].sendall(message.encode())
                     except socket.error as e:
-                        print(f"[{self.identifier}] Error sending start message to {verifier_id}: {e}")
+                        logger.error(f"[{self.identifier}] Error sending start message to {verifier_id}: {e}")
             # Send to clients
             for client_id, client_conn in self.client_connections.items():
                 try:
                     client_conn.sendall(message.encode())
                 except socket.error as e:
-                    print(f"[{self.identifier}] Error sending start message to client {client_id}: {e}")
+                    logger.error(f"[{self.identifier}] Error sending start message to client {client_id}: {e}")

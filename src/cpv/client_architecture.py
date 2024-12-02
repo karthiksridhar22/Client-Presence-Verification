@@ -3,7 +3,10 @@
 import socket
 import threading
 import time
-import src.cpv_utils as cpv_utils
+from . import cpv_utils
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Client:
     def __init__(self, identifier, servers):
@@ -20,6 +23,7 @@ class Client:
         self.running = True
         self.lock = threading.Lock()
         self.session_id = None  # Session ID for the current measurement
+        self.forwarded_timestamps = set()  # To prevent redundant forwarding
 
     def start(self):
         """
@@ -37,14 +41,9 @@ class Client:
     def connect(self, identifier, server_host, server_port):
         """
         Establishes an outgoing connection to a server.
-
-        Args:
-            identifier (str): The identifier of the server.
-            server_host (str): The hostname or IP address of the server.
-            server_port (int): The port number of the server.
         """
         if identifier in self.connections:
-            print(f"[{self.identifier}] Already connected to {identifier}. Skipping.")
+            logger.info(f"[{self.identifier}] Already connected to {identifier}. Skipping.")
             return
 
         try:
@@ -57,17 +56,13 @@ class Client:
             threading.Thread(
                 target=self._handle_server, args=(server_socket, identifier), daemon=True
             ).start()
-            print(f"[{self.identifier}] Connected to server {identifier} ({server_host}:{server_port})")
+            logger.info(f"[{self.identifier}] Connected to server {identifier} ({server_host}:{server_port})")
         except socket.error as e:
-            print(f"[{self.identifier}] Failed to connect to {identifier}: {e}")
+            logger.error(f"[{self.identifier}] Failed to connect to {identifier}: {e}")
 
     def _handle_server(self, connection, identifier):
         """
         Handles communication with a server.
-
-        Args:
-            connection (socket.socket): The socket connection to the server.
-            identifier (str): The identifier of the server.
         """
         try:
             while self.running:
@@ -86,27 +81,28 @@ class Client:
                     session_id = params[0]
                     iterations = int(params[1])
                     self.session_id = session_id
-                    print(f"[{self.identifier}] Starting measurements for session {session_id}")
+                    logger.info(f"[{self.identifier}] Starting measurements for session {session_id}")
                     # No action needed; verifiers initiate measurements
                 else:
-                    print(f"[{self.identifier}] Received from {identifier}: {data}")
+                    logger.info(f"[{self.identifier}] Received from {identifier}: {data}")
         except socket.error as e:
-            print(f"[{self.identifier}] Connection error with {identifier}: {e}")
+            logger.error(f"[{self.identifier}] Connection error with {identifier}: {e}")
         finally:
             with self.lock:
                 connection.close()
                 self.connections.pop(identifier, None)
-                print(f"[{self.identifier}] Disconnected from {identifier}")
+                logger.info(f"[{self.identifier}] Disconnected from {identifier}")
 
     def _forward_timestamp_to_verifiers(self, sender_id, timestamp, iteration):
         """
         Forwards a timestamp received from one verifier to all verifiers.
-
-        Args:
-            sender_id (str): The identifier of the sender verifier.
-            timestamp (str): The timestamp to forward.
-            iteration (str): The current iteration number.
         """
+        key = (sender_id, timestamp, iteration)
+        with self.lock:
+            if key in self.forwarded_timestamps:
+                return  # Already forwarded this timestamp
+            self.forwarded_timestamps.add(key)
+
         message = cpv_utils.construct_message(
             cpv_utils.FORWARD_TIMESTAMP, sender_id, timestamp, iteration
         )
@@ -115,30 +111,30 @@ class Client:
                 if identifier != sender_id:
                     try:
                         connection.sendall(message.encode())
-                        print(f"[{self.identifier}] Forwarded timestamp from {sender_id} to {identifier}")
+                        logger.info(f"[{self.identifier}] Forwarded timestamp from {sender_id} to {identifier}")
                     except socket.error as e:
-                        print(f"[{self.identifier}] Error forwarding timestamp to {identifier}: {e}")
+                        logger.error(f"[{self.identifier}] Error forwarding timestamp to {identifier}: {e}")
 
     def list_connections(self):
         """
         Lists all active connections to servers.
         """
         with self.lock:
-            print(f"[{self.identifier}] Connected servers:")
+            logger.info(f"[{self.identifier}] Connected servers:")
             for identifier in self.connections.keys():
-                print(f"  - {identifier}")
+                logger.info(f"  - {identifier}")
 
     def shutdown(self):
         """
         Gracefully shuts down the client, closing all connections.
         """
-        print(f"[{self.identifier}] Shutting down...")
+        logger.info(f"[{self.identifier}] Shutting down...")
         self.running = False
         with self.lock:
             for identifier, connection in self.connections.items():
                 try:
                     connection.close()
-                    print(f"[{self.identifier}] Closed connection with {identifier}")
+                    logger.info(f"[{self.identifier}] Closed connection with {identifier}")
                 except (socket.error, OSError):
                     pass
             self.connections.clear()
@@ -157,4 +153,4 @@ class Client:
                 self.shutdown()
                 break
             else:
-                print("Available commands: list, connect, close")
+                logger.info("Available commands: list, connect, close")
