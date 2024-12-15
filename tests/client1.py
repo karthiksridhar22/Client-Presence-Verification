@@ -1,12 +1,28 @@
-from cpv.client_architecture import Client
+import os
+import sys
 import time
 
-client = Client(identifier='client1', servers={'server1': ('127.0.0.1', 9301), 'server2': ('127.0.0.1', 9302), 'server3': ('127.0.0.1', 9303)})
-client.start()
-  #keep the main program running to allow command input
-try:
-    while True:
-        time.sleep(1)  # Prevent busy waiting
-except KeyboardInterrupt:
-    print("Shutting down server...")
-    client.shutdown()
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.cpv.client_architecture import Client
+
+def main():
+    identifier = 'client1'
+    servers = {
+        'server1': ('127.0.0.1', 9601),
+        'server2': ('127.0.0.1', 9602),
+        'server3': ('127.0.0.1', 9603)
+    }
+
+    client = Client(identifier, servers)
+    client.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Shutting down client...")
+        client.shutdown()
+
+if __name__ == '__main__':
+    main()
