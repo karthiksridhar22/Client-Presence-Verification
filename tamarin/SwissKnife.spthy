@@ -1,0 +1,436 @@
+/*
+  Implementation of Swiss-Knife protocol
+  Reference: https://doi.org/10.1007/978-3-642-00730-9_7
+
+  Parts of code here are inspired and taken from the paper cited in report
+*/
+
+// Defines the theory named 'SwissKnife'
+theory SwissKnife
+
+// Start of the theory definition
+begin
+
+/* --- Builtins & Functions --- */
+
+// Declare the cryptographic primitives Tamarin should model with built-in semantics.
+// asymmetric-encryption: Provides public/private key pairs (pk, sk) and asymmetric encryption {m}pk(k). Used here mainly for key generation structure.
+// xor: Provides the exclusive OR operation with its standard algebraic properties (Associativity, Commutativity, Unit=0, Nilpotence x#x=0). Tamarin uses '#' for XOR.
+builtins:   asymmetric-encryption, xor
+
+// Declare abstract function symbols used in the protocol without predefined semantics.
+// f/2: Represents the Pseudorandom Function (PRF) used by agents. Arity 2 (takes 2 arguments).
+//      Used for computing shares (e.g., a = f(x, <C_B, N_B>)) and authenticators (e.g., t_B, t_A).
+//      The key 'x' is typically passed implicitly via the !Shk fact in the rules using 'f'.
+// g/2: Represents the function/logic used by the Prover to compute the response during the fast phase.
+//      Takes the challenge 'c' and the pair of shares 'compl' (<z0, z1>) as input.
+//      In the actual protocol, this is just selecting the appropriate bit from z0 or z1 based on c.
+functions:  f/2, g/2
+
+// -------------------- Protocol Rules -------------------- //
+/* These rules model the steps of the Swiss-Knife protocol executed by HONEST agents.
+   Each rule defines a state transition based on consumed facts (premises) and produced facts (conclusions).
+   Facts represent the state of agents or messages on the network. */
+
+// Rule Verif1: Verifier V initiates the protocol by sending its nonce N_A.
+rule Verif1:
+  // Premises: Requires nothing to start.
+  [ Fr(~n) ] // Generates a fresh nonce ~n (representing N_A). 'Fr' creates fresh values. '~' denotes freshness.
+  // Actions: Records the 'Start' action, marking the beginning of a protocol instance identified by nonce ~n.
+--[ Start(~n) ]->
+  // Conclusion: Produces two facts:
+  //             1. VerifState1(~n): A state fact indicating the Verifier is now in state 1, holding its nonce ~n.
+  //             2. Out(~n): Puts the nonce ~n onto the network for the adversary (and potentially the Prover) to see.
+  [ VerifState1(~n),
+    Out(~n) ]
+
+// Rule Prover1: Prover P receives Verifier's nonce n (N_A), generates its nonce N_B, computes shares, and sends N_B.
+rule Prover1:
+  // Let-bindings: Define intermediate values locally within the rule. These are computed before checking premises.
+  // z0 = f(x, <'hello', ~m>): Computes the first share Z0.
+  //   'x' is the shared key (obtained from !Shk fact below).
+  //   f is the PRF symbol.
+  //   <'hello', ~m> represents the input pair (e.g., <Constant C_B, Nonce N_B>). ~m is the fresh nonce N_B.
+  //   'hello' is a public constant placeholder for C_B. Tamarin uses '<a,b>' for pairing.
+  let z0 = f(x, <'hello', ~m>)
+      // z1 = z0 XOR x: Computes the second share Z1 using the XOR operator '#'.
+      z1 = z0 ⊕ x
+  in
+  // Premises: Facts that must exist in the current state for the rule to fire.
+  [ In(n),            // Prover must receive nonce n (N_A) from the network. 'In' fact is created by adversary delivering an Out fact.
+    Fr(~m),           // A fresh nonce ~m (N_B) must be generated for this rule instance.
+    !Shk($V, $P, x) ] // A persistent shared key fact must exist between Verifier $V and Prover $P.
+                      // '$' denotes public names (constants). '!' denotes persistent facts (not consumed by the rule).
+  // Actions: Records the 'Start' action for the Prover's side of the session, identified by nonce ~m.
+--[ Start(~m) ]->
+  // Conclusion: Produces three facts:
+  //             1. Send($P, ~m): Creates an intention for Prover $P to send nonce ~m (N_B). The DBSend rule will handle actual network output.
+  //             2. ProverState1($V, $P, n, ~m, <z0, z1>): State fact indicating P is in state 1, holding partner V's ID, nonces n and ~m, and the computed shares <z0, z1>.
+  //             3. MayLeak(...): A fact indicating that certain information *could* be leaked at this point, used for collusion analysis.
+  [ Send($P, ~m),
+    ProverState1($V, $P, n, ~m, <z0, z1>),
+
+    // MayLeak($P, <z0, z1>) // Ideal leak for Terrorist Fraud analysis: only ephemeral shares z0, z1 are leaked.
+    MayLeak($P, <z0, x>)   // Workaround used in this model: leaks z0 AND the long-term key x.
+                           // This simplifies proving certain properties if 'g' isn't modeled precisely,
+                           // but it deviates from the strict definition of Terrorist Fraud (where x is NOT leaked).
+                           // This means TF resistance might not be accurately checked with this specific leak.
+  ]
+
+// Rule Verif2: Verifier V receives Prover's nonce m (N_B) and sends a fresh challenge c. This marks the start of the conceptual "fast phase" timing.
+rule Verif2: // fast phase starts
+  // Premises:
+  [ VerifState1(n), // V must be in state 1, holding its nonce n (N_A).
+    In(m),          // V must receive Prover's nonce m (N_B) from the network.
+    Fr(~c) ]        // V generates a fresh challenge ~c.
+  // Actions: Records V sending the challenge ~c. This action fact can be used in lemmas.
+--[ Send($V, ~c) ]->
+  // Conclusion:
+  [ VerifState2($V, n, m, ~c), // V transitions to state 2, storing its nonce n, Prover's nonce m, and the challenge ~c.
+    Out(~c) ]                 // V outputs the challenge ~c to the network.
+  
+
+// Rule Prover2: Prover P receives challenge c, computes response 'resp' using function 'g', and sends 'resp'.
+rule Prover2:
+  // Let-binding: Computes the response 'resp'.
+  // 'g' takes the received challenge 'c' and the pair of shares 'compl' (which is <z0, z1> from ProverState1).
+  let resp = g(c, compl)
+  in
+  // Premises:
+  [ ProverState1(V, P, n, m, compl), // P must be in state 1, holding nonces n, m and shares 'compl'.
+    In(c),                           // P receives challenge c from the network.
+    !Shk(V, P, x) ]                  // Requires the shared key fact (implicitly needed for context or later steps).
+  // Actions: No action labels ('-->'). The computation and sending are modeled implicitly by the state transition.
+--> // Arrow '-->' means no action labels are generated for this transition.
+  // Conclusion:
+  [ Send(P, resp),                  // P intends to send the computed response 'resp'.
+    ProverState2(V, P, n, m, c) ]   // P transitions to state 2, storing the challenge 'c' it received.
+  
+
+// Rule Verif3: Verifier V receives response 'resp'. This marks the end of the conceptual "fast phase" timing for V's reception.
+rule Verif3: // fast phase ends
+  // Let-bindings: V recomputes the expected shares z0, z1 and the expected response based on its stored state and the shared key.
+  let z0 = f(x, <'hello', m>)       // Recompute Z0 using shared key x and Prover's nonce m (N_B).
+      z1 = z0 ⊕ x                   // Recompute Z1 using XOR '#'.
+      resp_expected = g(c, <z0, z1>) // Recompute the expected response using the challenge 'c' V sent.
+  in
+  // Premises:
+  [ VerifState2(V, n, m, c),        // V must be in state 2, holding nonces n, m and the challenge c it sent.
+    !Shk(V, $P, x),                 // Requires the shared key 'x' for the specific Prover $P.
+    Recv(V, resp) ]                 // V receives a response 'resp' via the Recv fact (generated by DBRecv rule).
+  // Actions: No action labels ('-->').
+-->
+  // Conclusion:
+  [ VerifState3(V, $P, n, m, c, resp) ] // V transitions to state 3, storing partner $P, nonces, challenge c, and the received response resp.
+  // Implicit Check: This rule only fires if the 'resp' received via Recv(V, resp) *unifies* with the 'resp_expected' computed locally.
+  // If the received response doesn't match what V expected for challenge 'c', this rule cannot execute.
+  // This models the response check, but does it immediately upon reception, unlike the paper where checks happen later.
+  
+
+// Rule Prover3: Prover P computes the final authenticator t_B and sends it along with the challenge 'c' it received.
+rule Prover3:
+  // Premises:
+  [ ProverState2(V, P, n, m, c), // P must be in state 2, holding nonces n, m and the received challenge c.
+    !Shk(V, P, x) ]              // Requires the shared key.
+  // Actions: No action labels ('-->').
+-->
+  // Conclusion:
+  // P intends to send the pair <t_B, c'>. t_B = f(x, <c', P_ID, N_A, N_B>).
+  // Here, c' is the challenge P received (stored as 'c' in ProverState2). P_ID is $P. N_A is 'n'. N_B is 'm'.
+  [ Send(P, <f(x, <c, P, n, m>), c> ),
+    ProverState3(V, P, n, m, c) ]      // P transitions to state 3.
+  
+
+// Rule Verif4: Verifier V receives the pair <t_B, c'>, verifies t_B, makes the security claim, and optionally sends t_A.
+rule Verif4:
+  // Premises:
+  [ VerifState3(V, P, n, m, c, resp), // V must be in state 3, holding nonces, challenge c, response resp.
+    In( <auth, c_prime> ),            // V receives the pair <t_B, c'> from the network. 'auth' is t_B, 'c_prime' is c'.
+    !Shk(V, P, x) ]                   // Requires the shared key for P.
+  // Actions:
+  //   DBSec(V, P, c, resp): Records the critical security claim for the causality lemma. Asserts that V believes the
+  //                         distance bounding check based on challenge 'c' (the one V sent) and response 'resp' (the one V received)
+  //                         for Prover P was successful.
+  //   End(n): Marks the end of the Verifier's protocol run identified by nonce n.
+--[ DBSec(V, P, c, resp),
+    End(n) ]->
+  [ Out( f(x, m) ) ]
+  // Conclusion:
+  //   eq(auth, f(x, <c_prime, P, n, m>)): Performs the final authentication check using Tamarin's equality predicate 'eq'.
+  //                                       This rule only fires if the received 'auth' (t_B) matches the value V computes
+  //                                       using the received challenge 'c_prime', Prover ID P, nonces n, m, and key x.
+  //                                       This correctly models the paper's check using the challenge c' reported by the Prover.
+  //   Out( f(x, m) ): Outputs the message for mutual authentication (t_A = f(x, N_B)). This is sent to the network.
+  
+
+// Rule Prover4: Prover P receives the final message t_A for mutual authentication.
+rule Prover4:
+  // Premises:
+  [ ProverState3(V, P, n, m, c), // P must be in state 3.
+    !Shk(V, P, x),              // Requires the shared key.
+    In(f(x, m)) ]               // P receives t_A = f(x, m) from the network. Implicitly verifies it by unification with f(x,m).
+  // Actions: Marks the end of the Prover's run identified by nonce m.
+--[ End(m) ]->
+  // Conclusion: Prover finishes. Empty conclusion means the state fact ProverState3 is consumed.
+  [ ]
+
+// ------------------- Generic Helper Code ------------------- //
+/* This section contains standard, reusable rules for modeling key infrastructure,
+   adversary capabilities (network control, compromise), and collusion mechanisms. */
+
+// --- Key Generation and Compromise ---
+
+// LtkGen: Generates a long-term asymmetric key pair (sk, pk) for an agent $X.
+rule LtkGen:
+  [ Fr(~k) ] // Generate fresh secret key material ~k
+--[ Once($X) ]-> // Action happens Once per agent $X
+[ !Ltk($X, ~k),      // Store persistent secret key fact !Ltk(Agent, SecretKey)
+  !Pk($X, pk(~k)), // Store persistent public key fact !Pk(Agent, PublicKey). pk() is a builtin function deriving public from secret key.
+  Out(pk(~k)) ]    // Output public key to network (adversary learns it)
+
+// ShkGen: Generates a symmetric shared key between agents $X and $Y.
+rule ShkGen:
+  [ Fr(~k) ] // Generate fresh shared key material ~k
+--[ Once(<$X, $Y>) ]-> // Action happens Once per pair <$X, $Y>
+[ !Shk($X, $Y, ~k) ] // Store persistent shared key fact !Shk(Agent1, Agent2, SharedKey)
+
+// LtkReveal: Models compromise of agent $X's long-term secret key.
+rule LtkReveal:
+  [ !Ltk($X, k) ] // Requires the Ltk fact for $X
+--[ !Compromise($X) ]-> // Action marks $X as compromised (persistently). The '!' makes the action fact persistent.
+[ Out(k),           // Output the secret key k to the network
+  !Compromise($X) ] // Add persistent compromise fact
+
+// ShkRevealX: Models compromise of a shared key k due to agent $X being compromised.
+rule ShkRevealX:
+  [ !Shk($X, $Y, k) ] // Requires the shared key fact
+--[ !Compromise($X) ]-> // Requires $X to be compromised (checks for existing persistent !Compromise fact)
+[ Out(k),           // Output the shared key k
+  !Compromise($X) ] // Keep the compromise fact (it's already persistent)
+
+// ShkRevealY: Models compromise of a shared key k due to agent $Y being compromised.
+rule ShkRevealY:
+  [ !Shk($X, $Y, k) ] // Requires the shared key fact
+--[ !Compromise($Y) ]-> // Requires $Y to be compromised
+[ Out(k),           // Output the shared key k
+  !Compromise($Y) ] // Keep the compromise fact
+
+// --- Network and Adversary Model (Dolev-Yao) ---
+// These rules model the standard Dolev-Yao adversary who controls the network.
+
+// DBInject: Allows a compromised agent $X to send a message m if the adversary knows m.
+// This rule models an active step by a compromised agent based on adversary knowledge.
+rule DBInject:
+  [ In(m), !Compromise($X) ] --> [ Send($X, m) ] // Compromised $X sends known message m
+
+// DBSend: Models an agent $X actually putting a message m onto the network.
+rule DBSend:
+  [ Send($X, m) ] // Consumes the intention-to-send fact created by a protocol rule.
+--[ Send($X, m), Action($X) ]-> // Records the Send action and, crucially, an Action($X) fact.
+                                // Action($X) is used by causality lemmas to track agent activity (honest or compromised).
+[ Net(m),       // Puts message m into the abstract network state (Net fact).
+  Out(m) ]      // Also outputs m directly (Out fact), which the adversary learns implicitly via Tamarin's built-in knowledge derivation.
+
+// DBRecv: Models an agent $Y receiving message m from the network.
+rule DBRecv:
+  [ Net(m) ] // Consumes the message m from the network state.
+--[ Action($Y), Recv($Y, m) ]-> // Records an Action by the receiver $Y and the Recv event.
+[ Recv($Y, m) ] // Creates the Recv($Y, m) fact, which can be consumed by agent protocol rules (like Verif3).
+                // The adversary controls *which* Net(m) fact is consumed and *when*, modeling network control (delay, reordering, dropping).
+
+// --- Collusion (Leakage) Rule ---
+// Models a potentially colluding agent $X leaking specific information m.
+
+rule Leak:
+  [ MayLeak($X, m) ] // Consumes the MayLeak fact created by a protocol rule (e.g., Prover1).
+--[ Action($X), Collusion() ]-> // Records an Action by $X and a generic Collusion() event fact.
+[ Out(m) ] // Outputs the leaked message m to the network (adversary learns it).
+
+// ------------------- Reachability & Sanity Check Lemmas ------------------ //
+/* These lemmas help ensure the model is correctly specified and the protocol can run as intended under ideal conditions. */
+
+// reachability: Checks if at least one trace exists where the protocol completes successfully
+//               (V makes DBSec claim) without any compromise or collusion.
+lemma reachability:
+  exists-trace // Asserts the existence of at least one trace satisfying the following formula.
+  "
+  Ex V P chal resp #i /*#i2*/ #j #k #l. // Existential quantifiers for agents, messages, and timepoints (# represents time).
+    Send(V, chal)@i &           // V sends challenge 'chal' at time i. '@i' binds the event to timepoint i.
+    //Recv(P, chal)@i2 &        // Optional: Check if P receives the challenge.
+    Send(P, resp)@j &           // P sends response 'resp' at time j.
+    Recv(V, resp)@k &           // V receives response 'resp' at time k.
+    DBSec(V, P, chal, resp)@l & // V makes the DBSec claim at time l.
+    i<j & j<k & k<l &           // Ensures correct temporal ordering of these key events.
+    not (Ex C #r. !Compromise(C)@r) & // Ensures no agent C was compromised at any time r in this trace.
+    not (Ex #c. Collusion()@c)       // Ensures no Collusion() event occurred at any time c in this trace.
+  " // If this lemma fails, the protocol cannot complete honestly, or the model is broken.
+
+// unique_runid: Ensures that each protocol run, identified by its starting nonce (Start(x)),
+//               occurs only once in time within a single trace. Prevents reusing run identifiers.
+lemma unique_runid:
+  "All x #i #j. (Start(x)@i & Start(x)@j) ==> #i=#j" // If Start(x) happens at time i and j, then i must equal j.
+
+// end_after_start: Ensures that if a run ends (End(x)), it must have started at or before that time.
+lemma end_after_start:
+  "All x #j. End(x)@j ==> Ex #i. Start(x)@i & (#i=#j | i<j)" // If End(x) happens at j, there exists Start(x) at i where i <= j.
+
+// fast_before_claim: Checks that if a DBSec claim is made by V, the corresponding fast phase events
+//                    (Send challenge by V, Recv response by V) actually occurred *before* the claim,
+//                    unless the Verifier V was compromised. Prevents claims without prior interaction.
+lemma fast_before_claim:
+  "
+  All V P chal resp #l. DBSec(V, P, chal, resp)@l ==> // For every DBSec claim at time l...
+    (Ex #i #j. Send(V, chal)@i & Recv(V, resp)@j & i<l & j<l) // ...either Send(V, chal)@i and Recv(V, resp)@j happened with i<l and j<l...
+    |
+    (Ex #j. !Compromise(V)@j) // ...OR the Verifier V was compromised at some time j.
+  " // If this fails, V might be making claims based on unrelated or non-existent fast phases.
+
+// ------------------------ Restrictions ---------------------------- //
+/* Restrictions limit the set of traces Tamarin analyzes, often for performance or modeling focus. */
+
+// once: Restricts analysis to traces where each 'Once(x)' fact (used for key generation rules LtkGen, ShkGen)
+//       occurs at most once for any given identity x (agent name or agent pair). Prevents agents generating multiple keys.
+restriction once:
+  "All x #i #j. (Once(x)@i & Once(x)@j) ==> #i=#j"
+
+/*
+// completion: (Commented out) A potentially useful but often too strong restriction.
+//             Would force all started runs to also complete (reach an End event).
+//             This can hide attacks that work by preventing protocol completion (Denial of Service).
+restriction completion:
+  "
+  All run #i. Start(run)@i ==> Ex #j. End(run)@j
+  "
+*/
+
+// ----------------- Expiry Rule and Restrictions (for Terrorist Fraud Analysis) ------------------- //
+/* These are specific mechanisms to model and analyze security *after* a potential collusion period ends.
+   The 'Expiry' event marks the end of the time window where collusion (via the Leak rule) is allowed. */
+
+// SetExpiry: A simple rule that can fire exactly once to introduce the 'Expiry()' action fact.
+rule SetExpiry:
+  [ ] --[ Expiry(), Once('expiry') ]-> [ ] // Fires once (due to Once action), creates Expiry() action fact.
+
+// no_collusion_after_expiry: Restricts traces such that no Collusion() event (from the Leak rule)
+//                            can happen *after* the Expiry() event.
+restriction no_collusion_after_expiry:
+  "All #i #j. (Expiry()@i & Collusion()@j) ==> j<i" // Collusion time j must be strictly less than Expiry time i.
+
+// sessions_complete_before_expiry: Restricts traces such that any protocol run (identified by Start(x))
+//                                  that begins before the Expiry() event must also end (End(x))
+//                                  before the Expiry() event. Ensures collusion only happens during runs
+//                                  that fully complete within the collusion window.
+restriction sessions_complete_before_expiry:
+  "All x #i #e. (Start(x)@i & Expiry()@e & i<e) ==> Ex #j. (End(x)@j & j<e)"
+
+// ------------------------ Security Lemmas (Causality-Based) ------------------------- //
+/* These lemmas formalize the distance-bounding security property using the causality approach
+   as described in the paper "Distance-Bounding Protocols: Verification without Time and Location". */
+
+// Lemma dbsec: The main causality-based security property (Definition 2 from the paper).
+// It checks if the necessary causal link exists between challenge sending, prover action, and response reception.
+lemma dbsec:
+  "
+  All V P chal resp #l. // For all possible agents V, P, messages chal, resp, and the timepoint l of the claim...
+    DBSec(V, P, chal, resp)@l ==> // If Verifier V makes a DBSec claim about Prover P (based on challenge 'chal' and response 'resp') at time l...
+      ( // EITHER: Honest Prover Case - P acted causally correctly.
+        Ex #i #j #k.              // There exist timepoints i, j, k such that...
+          Send(V, chal)@i &       // V performed the Send action for 'chal' at time i (recorded by DBSend using info from Verif2)
+          Action(P)@j &           // The *claimed prover* P performed an action at time j (recorded by DBSend or DBRecv)
+          Recv(V, resp)@k &       // V performed the Recv action for 'resp' at time k (recorded by DBRecv)
+          i<j & j<k               // AND the prover's action 'j' occurred strictly BETWEEN V sending 'i' and V receiving 'k'.
+      ) |
+      ( // OR: Compromised Prover Case - The *adversary* acted causally correctly using P's compromised state.
+        Ex P2 #p #p2 #i #j #k.    // There exist agents P2, timepoints p, p2, i, j, k such that...
+          !Compromise(P)@p &      // The claimed Prover P was compromised at some time p (p <= l).
+          !Compromise(P2)@p2 &    // Some agent P2 was compromised at some time p2 (P2 could be P or another compromised agent).
+          Send(V, chal)@i &       // V performed the Send action for 'chal' at time i.
+          Action(P2)@j &          // The *compromised agent* P2 performed an action at time j (via DBSend/DBRecv/DBInject).
+          Recv(V, resp)@k &       // V performed the Recv action for 'resp' at time k.
+          i<j & j<k               // AND the compromised agent's action 'j' occurred strictly BETWEEN V sending 'i' and V receiving 'k'.
+                                  // This covers the case where the adversary controls P2 and performs the necessary steps.
+      ) |
+      ( // OR: Verifier Compromised Case - The claim is trivially true if V is compromised.
+        Ex #j. !Compromise(V)@j   // The Verifier V was compromised at some time j (j <= l).
+      ) |
+      ( // OR: Collusion Case - This clause explicitly ignores traces where collusion occurred for this specific lemma variant.
+        Ex #j. Collusion()@j      // A Collusion() event (from the Leak rule) occurred at some time j (j <= l).
+      )
+  "
+  /* Interpretation: A successful DBSec claim implies causal correctness (Action between Send/Recv)
+     by either the honest prover P, OR by the adversary (controlling a compromised agent P2) if P was compromised.
+     This holds unless V was compromised OR collusion happened (traces with collusion are excluded by the last clause). */
+
+// Lemma dbsec_hnst: Checks causality assuming BOTH V and P remain HONEST and UNCOMPROMISED.
+//                   This helps isolate Mafia Fraud attacks (where an external adversary tricks honest parties).
+lemma dbsec_hnst:
+  "
+  All V P chal resp #l.
+    DBSec(V, P, chal, resp)@l ==> // If V claims success...
+      ( // ... then P must have acted causally correctly...
+        Ex #i #j #k.
+          Send(V, chal)@i &
+          Action(P)@j &
+          Recv(V, resp)@k &
+          i<j & j<k
+      ) | // ... OR V was compromised ...
+      (Ex #j. !Compromise(V)@j) |
+      // ... OR P was compromised ...
+      (Ex #j. !Compromise(P)@j) |
+      // ... OR Collusion occurred (ignore these traces for this specific check).
+      (Ex #j. Collusion()@j)
+  "
+  /* Interpretation: If V claims success, AND V is honest (!Compromise(V) is false), AND P is honest (!Compromise(P) is false),
+     AND no collusion happened (Collusion() is false), then P MUST have acted causally correctly (Action(P) between Send(V, chal) and Recv(V, resp)).
+     Failure of this lemma indicates a Mafia Fraud: an external adversary can make V accept without P's timely action, even when P and V behave correctly and don't collude. */
+
+// Lemma dbsec_hnst_collusion: Checks causality assuming V and P are honest, BUT ALLOWING collusion.
+//                             This helps analyze Terrorist Fraud scenarios (where P colludes but might not reveal the key).
+lemma dbsec_hnst_collusion:
+  "
+  All V P chal resp #l.
+    DBSec(V, P, chal, resp)@l ==> // If V claims success...
+      ( // ... then P must have acted causally correctly...
+        Ex #i #j #k.
+          Send(V, chal)@i &
+          Action(P)@j &
+          Recv(V, resp)@k &
+          i<j & j<k
+      ) | // ... OR V was compromised ...
+      (Ex #j. !Compromise(V)@j) |
+      // ... OR P was compromised.
+      (Ex #j. !Compromise(P)@j)
+      // Note: The Collusion() clause is REMOVED. We consider traces WITH collusion here.
+  "
+  /* Interpretation: If V claims success, AND V is honest, AND P is honest, then P must have acted causally correctly,
+     EVEN IF collusion (leakage via MayLeak/Leak rules) occurred.
+     If dbsec_hnst holds but this lemma fails, it suggests collusion enables breaking causality without compromising P.
+     This points towards a potential Terrorist Fraud, *especially* if the MayLeak fact doesn't leak the long-term key 'x'
+     (e.g., if it was MayLeak($P, <z0, z1>)). If MayLeak *does* leak 'x' (as in the workaround comment), then failure here
+     is less meaningful for TF analysis, as it likely relies on the key compromise. */
+
+// Lemma dbsec_hnst_star: Checks post-collusion security. Verifies causality assuming V and P are honest,
+//                        only considering protocol runs that complete *after* the collusion phase has ended (Expiry() event).
+lemma dbsec_hnst_star:
+  "
+  All V P chal resp #e #l.
+    (DBSec(V, P, chal, resp)@l & Expiry()@e & e<l) ==> // If V claims success at time l AFTER Expiry event e (e < l)...
+      ( // ... then P must have acted causally correctly...
+        Ex #i #j #k.
+          Send(V, chal)@i &
+          Action(P)@j &
+          Recv(V, resp)@k &
+          i<j & j<k
+      ) | // ... OR V was compromised ...
+      (Ex #j. !Compromise(V)@j) |
+      // ... OR P was compromised.
+      (Ex #j. !Compromise(P)@j)
+  "
+  /* Interpretation: If V claims success AFTER the collusion phase ended, AND V is honest, AND P is honest,
+     then P must have acted causally correctly during that specific run.
+     If dbsec_hnst_collusion holds but this lemma fails, it indicates the adversary gained a *persistent* advantage
+     from the earlier collusion (before Expiry) that allows them to break causality *later* without active help from P
+     and without P being compromised. This is a stronger indicator of Terrorist Fraud where leaked ephemeral info
+     enables future attacks after the collusion stops. */
+
+end // End of theory definition
